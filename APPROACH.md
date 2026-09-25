@@ -47,7 +47,7 @@ REPOSITORY STRUCTURE:
 4. TRAINING
     The CLI commands should all be able to be run from the root directory. For each training stage I will need to train, evaluate, benchmark the latency, and run inference on three different sequences (1 real, 1 synthetic, 1 sim). All training will use real + sim + synthetic data.
 
-    So each model will need a regular inference script and a pose covariance inference script. I'm not sure if the evaluation and latency benchmark scripts have to be model specific, but if they are universal they will go in the utils/ folder.
+    So each model will need a regular inference script and a pose covariance inference script. The inference videos should have a top and bottom panel. Top panel has translucent mask overlay with labeled and connected keypoints (to form the inner + outer gate shape), and the bottom panel uses black + white perfect seg mask representation with keypoints and inferred mask colorful overlay. For inference with rgb-->mask + mask-->pose pipelines, I want the inference video to be 4 panel where the left side uses inferred masks from the first model in the pipeline and the right side uses the perfect masks. I'm not sure if the evaluation and latency benchmark scripts have to be model specific, but if they are universal they will go in the utils/ folder.
 
     For each model, I will run:
     - A cheap training - 5 epochs with 10% of the data to smoke test
