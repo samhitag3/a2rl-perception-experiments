@@ -1,61 +1,110 @@
 # a2rl-perception-experiments
-REPOSITORY STRUCTURE:
-├─-assets/
-├─-data/
-├─-models/
-├─-utils
-├─-.gitignore
-├─-APPROACH.md
-├─-TRAIN.md
-└─-utils/
 
-1. PLANNING
-    Figure out data contracts:  determine training / inference data input and model inference output. Make it very 100% comprehensive and explicit - what data / values, what units if any, what format. Use isaac trajectory data as a sample to know where to cover our bases (beyond just DEFINITELY including rgb images, disjoint segmentation mask images meaning 1 mask per gate per frame, keypoint data, camera intrinsics, pose, gate ID, and a value that indicates if a gate visible frame is already passed, is the current target gate / being passed through, or a future gate (for vertical double gates, determine a convention to label the top and bottom gates, since they will share the same gate number but maybe label with A or B or .1 and .2)). The contract should have sufficient data so that I can later create a script that takes the model inference output and can use that to make a 3d reconstruction of the gate map that was in the input trajectory. Make sure values are nullable because real data will not have all the data. I am testing both rgb --> pose perception pipelines and rgb --> mask + mask --> pose pipelines (two joint models). The mask --> pose pipelines will either take in binary masks (1 mask per frame) or 1 mask per gate for frame (for the synthetic and isaac data, this will likely be instance ID masks, and for real data it will just be 1 for the biggest gate, 2 for the second biggest, etc. but the model should be prepared to have the data transformed into the 0 1 2 3 mask labeling set up since no real input will have instance masks, where the biggest mask might be labeled with ID 5, the next biggest mask might be labeled with ID 6). Set up the data contract / schema so that it can work with any of the pipelines, i.e. I will have one universal data folder that will be used for all the models I will be training.
+## Repository structure
 
-    After determining the data formats --> there needs to be corresponding data splitting and validation script. The splitting script (inputs: seed, can be defaulted) should check for an existing valid data split (valid if all the sequences are assigned to one of validation, test, or training and none of them are repeated). Then it should check if the existing split seed if there is one matches the inputted one and if it does, it should print something like: split already exists / confirmed. If existing split doesnt match the potential new one, give  y/n prompt to ask if the user wants to replace the split. If there is no existing split, create the split. To easily configure the splits, I suggest making them by assigning the data sequences in a txt or json file rather than actually moving around the data files and keeping the original files untouched. Apart from checking the splits, the validation script should check the actual data if it's compatible with the data contract. By default the split should be 80-10-10 where 80 is for training. If there are minimal sequences to available, prioritize assigning sequences to training, then validation, then test.
+```text
+assets/          Gate skins and other assets
+data/            Real, synthetic, and sim datasets
+models/          Model-specific training and inference code
+utils/           Shared validation, splitting, generation, and video tools
+APPROACH.md      Project plan
+TRAIN.md         Training commands and run notes
+.gitignore
+```
 
-    I will also need to training split script. (read below, but I will need splits of 10% and 30% of the data). When running this--first check for existing split of that ratio. If it already exists, do not rerun it. This split format should allow for multiple splits because I will need a 10% and a 30% split for the different training stages. If there are minimal sequences available, still make sure at least 1 sequence from the data is assigned to the 10% split.
+## 1. Planning
 
-    THESE SPLITS SHOULD SPLIT UP SEQUENCES AS A WHOLE -- THEY WILL NOT SPLIT UP INDIVIDUAL SEQUENCES.
+### Universal data contract
 
-    I need this data contract to be a file with all the information above specified -- I should be able to feed that in wherever (into LLMs) and it should be easy to understand by humans. Additionally at this point I also want to determine the metrics that will used to evaluate model performace. There are a few I certainly want--mask iou, and also prioritize gates further away, because if we just consider iou, if only the big masks in the front are detected, the iou will be high but won't account for the incorrect gate counts--and any more metrics that seem relevant.
+Figure out the data contracts: determine training and inference inputs and model inference outputs. Make them comprehensive and explicit about values, units, coordinate frames, and formats. Use Isaac trajectory data as a sample to know where to cover our bases. The contract must include RGB images, disjoint segmentation masks (one mask per gate per frame), keypoints, camera intrinsics, pose where available, gate identifiers, and whether a visible gate has already been passed, is the current target or being passed through, or is a future gate. For vertical double gates, label the top and bottom distinctly even if they share the same numbered obstacle.
 
-2. DATA FORMATTING / GENERATION
-    I will have 3 data formats. Real, Synthetic, and Sim.
+Use **one universal data folder format** for the real, synthetic, and sim sources and all model pipelines. I am testing both RGB → pose and RGB → mask → pose pipelines. Mask → pose variants may consume either a union binary mask (one per frame) or separate masks for each gate. Store per-instance masks or an instance-ID image in the universal dataset and derive union masks when needed. Fields unavailable in real data must be explicitly nullable; distinguish an unknown value from a verified absence of a gate.
 
-    For Real images, i don't have them labeled - I want to create a labeling script where it opens a labeling UI. The script will take in 2 inputs: rgb directory / image path, and a processed data output directory, where the output will match the data contract specified in #1. The input can be a single image OR a directory of images (but either way the output will be a folder since the output will have rgb, masks, pose data, etc.). The labeling UI should have an opening screen where I input the known camera intrinsics (where there is a null option if I don't know them), and then it should iterate through the different images. This should be the workflow for each image:
-    - START LABELING button (grey it out after it is clicked), and a RESTART LABELING (clears the current labels and ungreys out the START LABELING button, exactly one of START and RESTART should be greyed out at all times, or maybe make it a switch)
-    - START GATE and a RESTART GATE (similar to the START LABELING and RESTART LABELING it should be a one or another situation / switch), where I will start labeling the keypoints for a specific gate. I should have the option to skip corners if they are not visible in the image. I should be able to 2 finger scroll zoom in and out of the image, but there should also be ZOOM IN and ZOOM OUT buttons and a slider to navigate the image. Click to select a keypoint. After selecting the 8 keypoints in order (4 outer TL TR BR BL and then 4 inner), show the mask created buy the keypoints and an adjustment menu. The selected keypoints should be fixed, but for any keypoints not selected there should be a movable corner i can used to fill out the mask. There also should be point I can adjust on the sides of the gate to line up the mask with gate. There should also be a brush add / erase to deal with any obstructions in the image. After selecting the 8 keypoints the COMPLETE MASK button should be ungreyed out (because I might not always need to adjust the mask). There should also be a NO GATES IN IMAGE button, to log 0 gates in the image.
-    - Then there should be COMPLETE LABELING button. This should only appear after at least 1 gate has been logged or NO GATES IN IMAGE was selected. After this button is selected, the UI should proceed to the next image if there is one.
-    The script should iterate the images in the folder that are UNLABELED. i.e. if the script finds existing labeling for an image, it should start from the first unlabeled image.
-    Since I won't necessarily get through labeling all the images, rgb should be copied over to the outout directory, the output directory should be a separate directory that follows the data contract.
+Define the following IDs separately:
 
-    For sim images, I will create a script that transforms the existing sim data into the format that follows the data contract-->first it will validate, and if it's validated, it leaves it as is and has a y/n prompt that asks if the user wants to rename the existing directory to match the output directory if one is provided. If it's not validated, it copies the data into the format that's data contract compatible. If there is no output directory provided just attach the prefix FORMATTED_ to the existing directory name since we want the output to be separate.
+| Field | Meaning | Availability |
+| --- | --- | --- |
+| `instance_id` | Frame-local integer used in the instance mask; `0` is background. IDs may change in the next frame. | Ground truth when labeled; assigned to detections at inference. |
+| `track_id` | Identity of the same observed gate across frames of one sequence. | Ground truth when known; predicted by a tracker at inference. |
+| `map_gate_id` | Stable identity of a physical gate in the course, with a distinct suffix for top and bottom gates. | Ground truth when known; not assumed known by the drone at detection time. |
 
-    For synthetic images, I will create a data generation script that takes in 3 inputs (these should NOT be hardcoded into the configs): a backgrounds folder, a gate skin image path, and an output directory. The synthetic image data generation script will be designed to create a diverse set of trajectories (they should mimic the files of a flight video, because some of my models will use temporal gate tracking), and should include all the information in the data contract. The diversity must come from random:
-    - various gate paths (positioning of gates + flight failures)
-    - varying speeds
-    - different lighting affects - flares, random light patches, overall darking of image
-    - noise - lower contrast, add random noise, add some blur
-    - including double gates (one gate stacked upon the other)
-    - using all the images provided in the backgrounds folder
-    The config files should also take in and consider the camera intrinsics and the gate dimensions. The data generation script will lie in the utils/ directory.
+For real annotations, assign `instance_id` values using a deterministic **frame-local** convention, I want to do this with the inferred order of the gates, where the gate with the largest inferred area in the frame will have an `instance_id` of 1 and the smallest will have a smaller number (i.e. if the second gate in the image is blocked by the first one and the third gate has more visible area, but the second one would clearly be bigger without the occlusion which is why it would be labeled 2). These numbers are for storing and displaying instances, not physical identities or training targets that must remain consistent over time. The model should detect an unordered set of gates; match predicted gates to ground truth for training/evaluation, and assign frame-local IDs afterward. Use `track_id` to measure temporal identity consistency and `map_gate_id` to assess map association where that ground truth exists. Do not assume the drone already knows which gate it is approaching.
 
-3. DIRECTORY SET UP
-    I will configure all the paths in the terminal I am working out of.
+For each timestamp, document image size, color format, camera intrinsics (including distortion if applicable), time unit, mask encoding, keypoint order (outer TL/TR/BR/BL, then inner TL/TR/BR/BL), and gate dimensions. Define every 3D position and rotation by coordinate frame, axis convention, handedness, unit, transform direction, and rotation representation. Include camera-to-body extrinsics and timestamps when available. State the pose reference point on a gate. Distinguish camera-relative gate pose, drone/body pose, and world/map pose; never use an unqualified `pose` field.
 
-4. TRAINING
-    The CLI commands should all be able to be run from the root directory. For each training stage I will need to train, evaluate, benchmark the latency, and run inference on three different sequences (1 real, 1 synthetic, 1 sim). All training will use real + sim + synthetic data.
+Record annotation status per frame (`unlabeled`, `reviewed_no_gates`, or `reviewed_with_gates`). For keypoints, distinguish visible, occluded, outside the image, and unknown/unlabeled; retain coordinates only when their meaning is specified. Define instance masks as **visible gate pixels**, excluding occluders, and document any separately estimated amodal geometry. Keep a gate's passed/current/future role separate from its ID, since role changes over time and may be unknown in real footage.
 
-    So each model will need a regular inference script and a pose covariance inference script. The inference videos should have a top and bottom panel. Top panel has translucent mask overlay with labeled and connected keypoints (to form the inner + outer gate shape), and the bottom panel uses black + white perfect seg mask representation with keypoints and inferred mask colorful overlay. For inference with rgb-->mask + mask-->pose pipelines, I want the inference video to be 4 panel where the left side uses inferred masks from the first model in the pipeline and the right side uses the perfect masks. I'm not sure if the evaluation and latency benchmark scripts have to be model specific, but if they are universal they will go in the utils/ folder.
+Give each synthetic sequence a `background_id` that identifies its source background, shared across every sequence generated from that background. The field can be null for real and Isaac data when there is no meaningful known background identity; null must not group unrelated sequences into one background. If stable real scene or Isaac environment IDs are available later, record them. Include source type, sequence ID, generation seed, and other provenance needed to reproduce a sequence.
 
-    For each model, I will run:
-    - A cheap training - 5 epochs with 10% of the data to smoke test
-    - A baseline training - 15 epochs with 30% of the data to compare the efficacy of the model to compare all the models
+Write this contract in a separate human-readable file that I can feed to LLMs. Include examples of an unlabeled frame, a reviewed frame with zero gates, and a multi-gate frame with occlusion and a double gate. Keep enough information for a later script that uses inference outputs to reconstruct the input trajectory's 3D gate map; the reconstruction details can be worked out later.
 
-    After picking certain models to follow through with based off the baseline performance, I will run:
-    - Hyperparameter tuning stage (this might have multiple stages) - 10 epochs each with 30% of the data, number of trials and stages will likely vary for model to model. This will only be done with selected models. Should start out with X number of trials based off number of hyperparams and the the option to add more trials if it seems like there is room for improvement. Might need multiple stages for things like temporal window length tuning if needed.
-    - Final training - 60 epochs with early training 
-    - Post training threshold variable sweeps (model dependent, not necessary for all models)
+### Validation and splits
 
-utils/ --> will have scripts like the data validation + splitting scripts, an images to video script in addition to all the synthetic data generation code, and a script to make a 3d reconstruction of the gate map using the inference output data.
+Create corresponding validation and splitting scripts. The validation script checks the actual data against the contract, including referential integrity among frames, masks, keypoints, IDs, calibration, and labels. The splitting script takes a seed (with a default) and uses manifests such as TXT or JSON files rather than moving source files.
+
+The default official split is **80% train / 10% validation / 10% test**, assigned by **whole sequence**, never by individual frame. Check that every eligible sequence is assigned exactly once and that the stored seed and current dataset membership match. If a valid matching split exists, report that it is confirmed. If an existing split differs, ask before replacing it. When there are very few sequences, prioritize training, then validation, then test, and report any split that cannot be populated.
+
+Also create reusable training subsets containing **10% and 30% of the official training sequences**. The 10% subset should be contained in the 30% subset; validation and test membership must remain fixed across stages. Reuse an existing subset when its seed, fraction, parent training split, and dataset membership match. Give the 10% subset at least one training sequence when possible.
+
+I want to test generalization across diverse backgrounds, and I expect to generate multiple sequences from each synthetic background. Preserve a whole-sequence evaluation for new flights and add a **background-held-out evaluation**: all synthetic sequences with one known `background_id` must stay together, so backgrounds in that test set are absent from its training set. Keep this as a separately named split protocol with its own manifests and reported results; do not silently mix its scores with the ordinary sequence split. Handle null background IDs individually according to a documented policy instead of treating null as one shared background. Avoid placing copies or near-duplicate recordings of a single flight on opposite sides of either split.
+
+### Evaluation metrics
+
+Determine metrics before training. Include mask IoU, but prioritize detecting far gates as well: a high IoU on a large nearby gate can hide missed distant gates or incorrect gate counts. Report per-instance mask IoU/Dice, detection precision and recall, gate-count error, and recall by distance or apparent gate size. Also report keypoint accuracy with visibility status, camera-relative pose error where ground truth exists, and track identity consistency when track IDs exist. Break results out by real, synthetic, and sim source and by difficult cases such as occlusion and double gates. Define how predictions are matched to ground truth and how empty frames contribute. Use the validation split for checkpoint and threshold selection; reserve test results for final evaluation.
+
+## 2. Data formatting and generation
+
+I will have three data sources: **real, synthetic, and sim**.
+
+### Real images: labeling UI
+
+The real images are not fully labeled. Create a labeling script that opens a UI and takes an RGB image or directory and a processed output directory. Its output is always a folder following the universal contract. The opening screen accepts known camera intrinsics, with a null option when they are unknown. Iterate through **unlabeled** images, resuming at the first one without a completed review; copied RGB images in the output do not themselves count as labeled. The order the gates are labeled in a given frame using the UI will correspond with the `instance_id` they are assigned.
+
+For each image:
+
+1. Provide **Start labeling** and **Restart labeling** controls (or an equivalent switch). Restart clears the current image's draft labels. Exactly one start/restart action should be available at a time.
+2. Provide **Start gate** and **Restart gate** controls for an individual gate. Click to select the eight keypoints in order: four outer TL/TR/BR/BL, then four inner. Allow corners to be marked occluded or outside the image rather than forcing a guess. Support two-finger zoom, Zoom in/Zoom out buttons, and a slider to navigate the image.
+3. Show the mask derived from the selected points and an adjustment menu. Keep selected keypoints fixed unless the user explicitly edits them. Provide movable corners for skipped keypoints to shape the mask without pretending those corners were observed, adjustable points on gate sides, and add/erase brushes for irregular edges and obstructions. Enable **Complete mask** once the required gate annotation decisions have been made, even if the initial mask needs no adjustment.
+4. Support multiple gates in one image and a **No gates in image** action that records a reviewed, zero-gate frame. Enable **Complete labeling** only after at least one gate is complete or No gates has been selected. Then proceed to the next image.
+
+Copy RGB into the output directory separately from the original input. Save drafts or completed labels so that interrupted work resumes without treating unfinished images as negative examples. Where a real gate's persistent identity is not known, leave `track_id` and `map_gate_id` null rather than deriving them from its size.
+
+### Sim conversion
+
+Create a script that transforms existing sim data into the contract. First validate it; if already compatible, leave it as is and, when an output directory is given, ask whether to rename the existing directory to that name. If incompatible, copy and convert into a separate directory. When no output directory is provided, prefix the converted directory with `FORMATTED_`. Preserve available timestamps, calibration, poses, gate identities, and source provenance.
+
+### Synthetic generation
+
+Create a generation script in `utils/` that takes three CLI inputs **not hardcoded in config**: a backgrounds folder, a gate skin image path, and an output directory. Generate diverse trajectories that resemble flight videos for temporal gate tracking. Include the contract's labels and metadata. Vary gate paths and flight failures, speeds, lighting (flares, local patches, overall darkness), noise, contrast, blur, and stacked double gates. Use all provided background images across the generated dataset and retain each sequence's `background_id`. Configs should specify camera intrinsics and gate dimensions. Make generation reproducible from recorded seeds and configuration.
+
+## 3. Directory setup
+
+I will configure all paths in the terminal I am working out of. CLI commands should run from the repository root, with input and output paths supplied explicitly rather than embedded in model configs.
+
+## 4. Training, inference, and deployment
+
+All training uses real, sim, and synthetic data where labeled examples are available. At every training stage, train, evaluate, benchmark latency, and run inference on three example sequences: one real, one synthetic, and one sim. Keep the same validation and test protocols across models. Record the model configuration, dataset and split versions, seed, checkpoint, training time, and frames seen so comparisons remain reproducible.
+
+Each model needs a regular inference script and a pose covariance inference script where pose uncertainty is supported. Define covariance order, units, coordinate frame, and what the uncertainty covers; evaluate whether predicted uncertainty agrees with observed error. Shared evaluation or latency scripts can live in `utils/` if their input/output contracts are genuinely common.
+
+For inference videos, use a top and bottom panel. The top shows RGB with a translucent mask overlay and labeled, connected inner and outer keypoints. The bottom shows a black-and-white **ground-truth** segmentation mask with keypoints and a colorful predicted-mask overlay. For RGB → mask → pose pipelines, produce four panels: predicted-mask input on the left and perfect-mask input on the right, with matching RGB and mask views. Mark ground truth as unavailable for unreviewed frames; an empty panel must not imply that no gate exists. Label predicted-mask pipeline results and perfect-mask pose results separately. Use predicted masks for the main full-pipeline evaluation and perfect masks to diagnose the pose model's upper bound.
+
+### Training stages
+
+| Stage | Data | Training | Purpose |
+| --- | --- | --- | --- |
+| Cheap | 10% training subset | 5 epochs | Smoke test. |
+| Baseline | 30% training subset | 15 epochs | Compare model candidates under a shared protocol. |
+| Hyperparameter tuning | 30% training subset | About 10 epochs per trial; stages and trial counts depend on the model | Tune selected models; allow further trials if justified. Temporal window length may need its own stage. |
+| Final | Full training split | Up to 60 epochs with early stopping | Train selected configurations. |
+| Post-training | Validation split | Model-dependent threshold sweeps | Set inference thresholds without using test data. |
+
+For fair comparisons, report wall-clock time and frames/windows seen along with epochs, since architectures and temporal windows can differ in cost.
+
+### Deployment contract
+
+Define the runtime interface before final model selection: input resolution and color format; camera calibration and timestamp requirements; maximum simultaneous gates; union versus per-instance mask requirements; model state and reset behavior for temporal inference; output masks, keypoints, camera-relative poses, scores, `instance_id` and `track_id`; conventions for missing detections and covariance; and how the pipeline behaves when calibration is unknown. Benchmark **end-to-end** latency as well as model-only latency, including preprocessing, mask prediction, gate matching/tracking, and pose inference. State the hardware and real-time budget used for the decision.
+
+## Shared utilities
+
+`utils/` will contain data validation and splitting scripts, synthetic generation code, an images-to-video tool, and eventually a script to reconstruct a 3D gate map from inference outputs.
