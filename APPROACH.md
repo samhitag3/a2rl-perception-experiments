@@ -16,6 +16,8 @@ REPOSITORY STRUCTURE:
 
     I will also need to training split script. (read below, but I will need splits of 10% and 30% of the data). When running this--first check for existing split of that ratio. If it already exists, do not rerun it. This split format should allow for multiple splits because I will need a 10% and a 30% split for the different training stages. If there are minimal sequences available, still make sure at least 1 sequence from the data is assigned to the 10% split.
 
+    THESE SPLITS SHOULD SPLIT UP SEQUENCES AS A WHOLE -- THEY WILL NOT SPLIT UP INDIVIDUAL SEQUENCES.
+
     I need this data contract to be a file with all the information above specified -- I should be able to feed that in wherever (into LLMs) and it should be easy to understand by humans. Additionally at this point I also want to determine the metrics that will used to evaluate model performace. There are a few I certainly want--mask iou, and also prioritize gates further away, because if we just consider iou, if only the big masks in the front are detected, the iou will be high but won't account for the incorrect gate counts--and any more metrics that seem relevant.
 
 2. DATA FORMATTING / GENERATION
